@@ -22,6 +22,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.dataset import build_datasets, SUPERCLASS_NAMES, NUM_SUPERCLASSES
 from models.cnn_lstm import CNNLSTM
+from models.cnn_only import CNNOnly
+from models.lstm_only import LSTMOnly
+from models.transformer import CNNTransformer
+
+MODEL_REGISTRY = {
+    "cnn_lstm": CNNLSTM,
+    "cnn_only": CNNOnly,
+    "lstm_only": LSTMOnly,
+    "transformer": CNNTransformer,
+}
 
 
 def compute_metrics(
@@ -119,6 +129,9 @@ def evaluate(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--model", type=str, default="cnn_lstm",
+                        choices=list(MODEL_REGISTRY.keys()),
+                        help="Model architecture to train")
     parser.add_argument("--single-lead", action="store_true",
                         help="Train with Lead I only (Apple Watch simulation)")
     parser.add_argument("--device", type=str, default=None)
@@ -166,14 +179,15 @@ def main():
 
     # Build model
     in_channels = 1 if single_lead else cfg["model"]["in_channels"]
-    model = CNNLSTM(
+    model_cls = MODEL_REGISTRY[args.model]
+    model = model_cls(
         in_channels=in_channels,
         num_classes=cfg["model"]["num_classes"],
-        cnn_channels=cfg["model"]["cnn_channels"],
-        cnn_kernels=cfg["model"]["cnn_kernels"],
-        lstm_hidden=cfg["model"]["lstm_hidden"],
-        lstm_layers=cfg["model"]["lstm_layers"],
-        dropout=cfg["model"]["dropout"],
+        cnn_channels=cfg["model"].get("cnn_channels", [64, 128, 256, 256]),
+        cnn_kernels=cfg["model"].get("cnn_kernels", [15, 11, 7, 5]),
+        lstm_hidden=cfg["model"].get("lstm_hidden", 128),
+        lstm_layers=cfg["model"].get("lstm_layers", 2),
+        dropout=cfg["model"].get("dropout", 0.3),
     ).to(device)
 
     # torch.compile for optimised GPU kernels (PyTorch 2.x)
@@ -205,7 +219,8 @@ def main():
     # Training loop
     save_dir = cfg["output"]["save_dir"]
     os.makedirs(save_dir, exist_ok=True)
-    tag = "single_lead" if single_lead else "12_lead"
+    lead_tag = "single_lead" if single_lead else "12_lead"
+    tag = f"{args.model}_{lead_tag}"
 
     best_auc = 0.0
     patience_counter = 0
