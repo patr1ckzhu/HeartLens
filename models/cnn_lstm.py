@@ -2,20 +2,50 @@
 CNN-LSTM model for multi-label ECG classification.
 
 Architecture overview:
-  1. A stack of 1D convolutional blocks extracts local morphological
-     features (e.g. QRS shape, ST-segment deviations) from the raw signal.
-  2. The CNN output, which retains a reduced temporal dimension, is fed
-     into a bidirectional LSTM to capture inter-beat and rhythm-level
-     dependencies across the full recording.
-  3. A linear head maps the pooled LSTM representation to multi-label
-     logits (one per diagnostic superclass).
+  1. A stack of residual 1D convolutional blocks with squeeze-and-excitation
+     (SE) attention extracts local morphological features from the raw signal.
+     Residual connections stabilise gradient flow and allow each block to
+     learn refinements on top of the identity mapping. SE modules recalibrate
+     channel responses so the network can emphasise diagnostically relevant
+     features (e.g. ST-segment shape) while suppressing noise channels.
+  2. The CNN output retains sufficient temporal resolution for a bidirectional
+     LSTM to capture inter-beat and rhythm-level dependencies.
+  3. A linear head maps the pooled LSTM representation to multi-label logits.
 """
 import torch
 import torch.nn as nn
 
 
-class ConvBlock(nn.Module):
-    """Single 1D convolution block: Conv → BatchNorm → ReLU → MaxPool."""
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation block for channel-wise recalibration.
+
+    Learns per-channel scaling factors so the model can amplify informative
+    feature maps and suppress less useful ones.
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        mid = max(channels // reduction, 4)
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(channels, mid),
+            nn.ReLU(inplace=True),
+            nn.Linear(mid, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scale = self.fc(x).unsqueeze(-1)  # (batch, channels, 1)
+        return x * scale
+
+
+class ResConvBlock(nn.Module):
+    """Residual 1D convolution block with SE attention.
+
+    Conv → BN → ReLU → Conv → BN → SE → residual add → ReLU → MaxPool.
+    A 1x1 convolution is used on the skip path when channel dimensions change.
+    """
 
     def __init__(
         self,
@@ -27,20 +57,49 @@ class ConvBlock(nn.Module):
     ):
         super().__init__()
         padding = kernel_size // 2
-        self.block = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(pool_size),
-            nn.Dropout(dropout),
-        )
+
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.se = SEBlock(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.MaxPool1d(pool_size)
+        self.dropout = nn.Dropout(dropout)
+
+        # Learnable skip projection when channel count changes
+        if in_channels != out_channels:
+            self.skip = nn.Conv1d(in_channels, out_channels, 1)
+        else:
+            self.skip = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        identity = self.skip(x)
+
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.se(out)
+
+        # Match temporal dimension for residual add (pool may differ by ±1)
+        min_len = min(out.size(-1), identity.size(-1))
+        out = out[..., :min_len] + identity[..., :min_len]
+        out = self.relu(out)
+        out = self.pool(out)
+        out = self.dropout(out)
+        return out
+
+
+# Keep the old name available so ablation models that import ConvBlock still work
+ConvBlock = ResConvBlock
 
 
 class CNNLSTM(nn.Module):
     """CNN-LSTM for multi-label ECG classification.
+
+    Compared to the initial version, this adds:
+      - Residual skip connections in every conv block
+      - SE channel attention after each block
+      - Reduced final pooling to preserve temporal resolution for LSTM
 
     Args:
         in_channels: Number of ECG leads (12 for standard, 1 for single-lead).
@@ -65,15 +124,16 @@ class CNNLSTM(nn.Module):
         super().__init__()
         assert len(cnn_channels) == len(cnn_kernels)
 
-        # Build CNN encoder
-        layers = []
+        # Build residual CNN encoder
+        blocks = []
         ch_in = in_channels
         for ch_out, ks in zip(cnn_channels, cnn_kernels):
-            layers.append(ConvBlock(ch_in, ch_out, ks, pool_size=2, dropout=dropout * 0.5))
+            blocks.append(ResConvBlock(ch_in, ch_out, ks, pool_size=2, dropout=dropout * 0.5))
             ch_in = ch_out
-        # Final pooling to further reduce temporal length
-        layers.append(nn.MaxPool1d(4))
-        self.cnn = nn.Sequential(*layers)
+        # Reduced final pooling (was 4, now 2) to keep more temporal steps
+        # for the LSTM. With pool=2: 5000 → 2500 → 1250 → 625 → 312 → 156
+        blocks.append(nn.MaxPool1d(2))
+        self.cnn = nn.Sequential(*blocks)
 
         # Bidirectional LSTM over the CNN feature sequence
         self.lstm = nn.LSTM(
@@ -101,13 +161,11 @@ class CNNLSTM(nn.Module):
             Logits of shape (batch, num_classes). Apply sigmoid for
             probabilities in multi-label setting.
         """
-        # CNN feature extraction: (batch, leads, time) → (batch, channels, reduced_time)
         features = self.cnn(x)
 
-        # Reshape for LSTM: (batch, reduced_time, channels)
+        # (batch, channels, time) → (batch, time, channels)
         features = features.permute(0, 2, 1)
 
-        # LSTM temporal modelling
         lstm_out, _ = self.lstm(features)
 
         # Global average pooling over time

@@ -119,22 +119,56 @@ class PTBXLDataset(Dataset):
         signals: np.ndarray,
         labels: np.ndarray,
         single_lead: bool = False,
+        augment: bool = False,
     ):
         self.signals = signals
         self.labels = labels
         self.single_lead = single_lead
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.signals)
 
+    def _apply_augmentation(self, sig: np.ndarray) -> np.ndarray:
+        """Apply random augmentations to simulate real-world signal variation.
+
+        Augmentations are mild enough to preserve diagnostic morphology
+        while improving generalisation to unseen recording conditions.
+        """
+        # Gaussian noise (simulates electrode noise)
+        if np.random.random() < 0.5:
+            sig = sig + np.random.normal(0, 0.05, sig.shape).astype(np.float32)
+
+        # Amplitude scaling (simulates gain variation across devices)
+        if np.random.random() < 0.5:
+            scale = np.random.uniform(0.8, 1.2)
+            sig = sig * scale
+
+        # Baseline wander (low-frequency sinusoidal drift)
+        if np.random.random() < 0.3:
+            t = np.arange(sig.shape[0], dtype=np.float32)
+            freq = np.random.uniform(0.1, 0.5)
+            amplitude = np.random.uniform(0.0, 0.1)
+            wander = amplitude * np.sin(2 * np.pi * freq * t / sig.shape[0])
+            sig = sig + wander[:, np.newaxis]
+
+        # Random temporal crop and pad back (slight phase shift)
+        if np.random.random() < 0.3:
+            shift = np.random.randint(-50, 50)
+            sig = np.roll(sig, shift, axis=0)
+
+        return sig
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        sig = self.signals[idx]  # (time, leads)
+        sig = self.signals[idx].copy()  # (time, leads)
+
+        if self.augment:
+            sig = self._apply_augmentation(sig)
 
         if self.single_lead:
-            sig = sig[:, 0:1]  # Keep Lead I only, shape (time, 1)
+            sig = sig[:, 0:1]
 
-        # Transpose to (leads, time) for Conv1d
-        sig = torch.from_numpy(sig).permute(1, 0)
+        sig = torch.from_numpy(sig).permute(1, 0)  # (leads, time)
         label = torch.from_numpy(self.labels[idx])
         return sig, label
 
@@ -197,7 +231,7 @@ def build_datasets(
     test_mask = folds == 10
 
     return (
-        PTBXLDataset(signals[train_mask], labels[train_mask], single_lead),
-        PTBXLDataset(signals[val_mask], labels[val_mask], single_lead),
-        PTBXLDataset(signals[test_mask], labels[test_mask], single_lead),
+        PTBXLDataset(signals[train_mask], labels[train_mask], single_lead, augment=True),
+        PTBXLDataset(signals[val_mask], labels[val_mask], single_lead, augment=False),
+        PTBXLDataset(signals[test_mask], labels[test_mask], single_lead, augment=False),
     )
