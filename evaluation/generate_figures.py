@@ -57,7 +57,10 @@ def main():
 
     # Load model (without torch.compile for hook compatibility)
     model = CNNLSTM(in_channels=12, num_classes=5).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True))
+    state_dict = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    # Strip '_orig_mod.' prefix added by torch.compile
+    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.eval()
 
     # Hook into the last residual conv block

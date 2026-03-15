@@ -124,9 +124,9 @@ def create_demo(
     # Load single-lead model (for Apple Watch ECGs)
     sl_model = CNNLSTM(in_channels=1, num_classes=5).to(device)
     if os.path.exists(single_lead_checkpoint):
-        sl_model.load_state_dict(
-            torch.load(single_lead_checkpoint, map_location=device, weights_only=True)
-        )
+        sd = torch.load(single_lead_checkpoint, map_location=device, weights_only=True)
+        sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
+        sl_model.load_state_dict(sd)
     sl_model.eval()
 
     target_layer = sl_model.cnn[-2]

@@ -248,7 +248,9 @@ def main():
             best_auc = auc
             patience_counter = 0
             ckpt_path = os.path.join(save_dir, f"best_model_{tag}.pt")
-            torch.save(model.state_dict(), ckpt_path)
+            # Strip '_orig_mod.' prefix from torch.compile before saving
+            sd = {k.removeprefix("_orig_mod."): v for k, v in model.state_dict().items()}
+            torch.save(sd, ckpt_path)
             print(f"  → Saved best model (AUC={best_auc:.4f})")
         else:
             patience_counter += 1
