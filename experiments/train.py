@@ -260,7 +260,19 @@ def main():
 
     # Test evaluation
     print("\n--- Test Set Evaluation ---")
-    model.load_state_dict(torch.load(os.path.join(save_dir, f"best_model_{tag}.pt"), weights_only=True))
+    best_sd = torch.load(os.path.join(save_dir, f"best_model_{tag}.pt"), weights_only=True)
+    # Re-create a fresh (non-compiled) model for clean loading
+    eval_model = model_cls(
+        in_channels=in_channels,
+        num_classes=cfg["model"]["num_classes"],
+        cnn_channels=cfg["model"].get("cnn_channels", [64, 128, 256, 256]),
+        cnn_kernels=cfg["model"].get("cnn_kernels", [15, 11, 7, 5]),
+        lstm_hidden=cfg["model"].get("lstm_hidden", 128),
+        lstm_layers=cfg["model"].get("lstm_layers", 2),
+        dropout=cfg["model"].get("dropout", 0.3),
+    ).to(device)
+    eval_model.load_state_dict(best_sd)
+    model = eval_model
     test_loss, test_metrics = evaluate(model, test_loader, criterion, device)
 
     print(f"Test loss: {test_loss:.4f}")
