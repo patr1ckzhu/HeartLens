@@ -1,0 +1,25 @@
+data:
+  data_dir: data/raw/ptb-xl-a-large-publicly-available-electrocardiography-dataset-1.0.3
+  cache_dir: data/cached
+  sampling_rate: 500
+  single_lead: false
+
+model:
+  in_channels: 12
+  num_classes: 5
+  cnn_channels: [64, 128, 256, 256]
+  cnn_kernels: [15, 11, 7, 5]
+  lstm_hidden: 128
+  lstm_layers: 2
+  dropout: 0.3
+
+training:
+  batch_size: 64
+  epochs: 50
+  lr: 0.001
+  weight_decay: 0.0001
+  scheduler: cosine
+  early_stopping_patience: 10
+
+output:
+  save_dir: results
