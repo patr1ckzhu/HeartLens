@@ -1,0 +1,44 @@
+# Data
+data/raw/
+data/processed/
+*.dat
+*.hea
+*.atr
+
+# Model checkpoints and results
+results/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+wandb/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Conda / pip
+.conda/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.log

@@ -1,0 +1,24 @@
+name: heartlens
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch
+  - torchvision
+  - torchaudio
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - tqdm
+  - pyyaml
+  - h5py
+  - pip
+  - pip:
+      - wfdb
+      - neurokit2
+      - gradio
