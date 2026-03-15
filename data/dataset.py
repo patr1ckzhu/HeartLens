@@ -30,6 +30,17 @@ SUPERCLASS_MAP = {
 SUPERCLASS_NAMES = list(SUPERCLASS_MAP.keys())
 NUM_SUPERCLASSES = len(SUPERCLASS_MAP)
 
+# 23 diagnostic subclasses (sorted alphabetically to match PTB-XL convention)
+SUBCLASS_MAP = {
+    "AMI": 0, "CLBBB": 1, "CRBBB": 2, "ILBBB": 3, "IMI": 4,
+    "IRBBB": 5, "ISCA": 6, "ISCI": 7, "ISC_": 8, "IVCD": 9,
+    "LAFB/LPFB": 10, "LAO/LAE": 11, "LMI": 12, "LVH": 13, "NORM": 14,
+    "NST_": 15, "PMI": 16, "RAO/RAE": 17, "RVH": 18, "SEHYP": 19,
+    "STTC": 20, "WPW": 21, "_AVB": 22,
+}
+SUBCLASS_NAMES = list(SUBCLASS_MAP.keys())
+NUM_SUBCLASSES = len(SUBCLASS_MAP)
+
 
 def load_ptbxl_metadata(data_dir: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load PTB-XL metadata and SCP statement descriptions.
@@ -75,6 +86,20 @@ def encode_superclass_labels(
             superclass = scp_df.loc[code].diagnostic_class
             if superclass in SUPERCLASS_MAP:
                 label[SUPERCLASS_MAP[superclass]] = 1.0
+    return label
+
+
+def encode_subclass_labels(
+    scp_codes: dict,
+    scp_df: pd.DataFrame,
+) -> np.ndarray:
+    """Convert SCP code dict to a multi-hot subclass vector (23 classes)."""
+    label = np.zeros(NUM_SUBCLASSES, dtype=np.float32)
+    for code, likelihood in scp_codes.items():
+        if code in scp_df.index and likelihood > 0:
+            subclass = scp_df.loc[code].diagnostic_subclass
+            if subclass in SUBCLASS_MAP:
+                label[SUBCLASS_MAP[subclass]] = 1.0
     return label
 
 
@@ -177,6 +202,7 @@ def build_datasets(
     data_dir: str,
     sampling_rate: int = 500,
     single_lead: bool = False,
+    task: str = "superclass",
     cache_dir: str | None = None,
 ) -> tuple[PTBXLDataset, PTBXLDataset, PTBXLDataset]:
     """Build train, validation, and test datasets from PTB-XL.
@@ -188,6 +214,7 @@ def build_datasets(
         data_dir: Path to extracted PTB-XL directory.
         sampling_rate: 100 or 500 Hz.
         single_lead: Whether to use only Lead I.
+        task: Label granularity — "superclass" (5) or "subclass" (23).
         cache_dir: If set, cache preprocessed data to disk for faster
             subsequent loading.
 
@@ -197,7 +224,7 @@ def build_datasets(
     cache_path = None
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
-        cache_path = os.path.join(cache_dir, f"ptbxl_{sampling_rate}hz.npz")
+        cache_path = os.path.join(cache_dir, f"ptbxl_{sampling_rate}hz_{task}.npz")
 
     # Try loading from cache
     if cache_path and os.path.exists(cache_path):
@@ -209,10 +236,9 @@ def build_datasets(
     else:
         meta, scp_df = load_ptbxl_metadata(data_dir)
         signals = load_signals(meta, data_dir, sampling_rate)
-        labels = np.array([
-            encode_superclass_labels(codes, scp_df)
-            for codes in meta.scp_codes
-        ])
+
+        encoder = encode_subclass_labels if task == "subclass" else encode_superclass_labels
+        labels = np.array([encoder(codes, scp_df) for codes in meta.scp_codes])
         folds = meta.strat_fold.values
 
         # Preprocess all signals

@@ -20,7 +20,10 @@ from sklearn.metrics import roc_auc_score, f1_score
 # Allow imports from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.dataset import build_datasets, SUPERCLASS_NAMES, NUM_SUPERCLASSES
+from data.dataset import (
+    build_datasets, SUPERCLASS_NAMES, NUM_SUPERCLASSES,
+    SUBCLASS_NAMES, NUM_SUBCLASSES,
+)
 from models.cnn_lstm import CNNLSTM
 from models.cnn_only import CNNOnly
 from models.lstm_only import LSTMOnly
@@ -38,6 +41,7 @@ def compute_metrics(
     labels: np.ndarray,
     probs: np.ndarray,
     threshold: float = 0.5,
+    class_names: list[str] = None,
 ) -> dict:
     """Compute multi-label classification metrics.
 
@@ -50,10 +54,12 @@ def compute_metrics(
         Dict with macro AUC, per-class AUC, and macro F1.
     """
     metrics = {}
+    if class_names is None:
+        class_names = SUPERCLASS_NAMES
 
     # Per-class AUC (skip classes with no positive samples in batch)
     per_class_auc = []
-    for i, name in enumerate(SUPERCLASS_NAMES):
+    for i, name in enumerate(class_names):
         if labels[:, i].sum() > 0 and labels[:, i].sum() < len(labels):
             auc = roc_auc_score(labels[:, i], probs[:, i])
             metrics[f"auc_{name}"] = auc
@@ -100,6 +106,7 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
+    class_names: list[str] = None,
 ) -> tuple[float, dict]:
     """Evaluate model on a dataset. Returns loss and metrics dict."""
     model.eval()
@@ -121,7 +128,7 @@ def evaluate(
     all_labels = np.concatenate(all_labels)
     all_probs = np.concatenate(all_probs)
     avg_loss = total_loss / len(loader.dataset)
-    metrics = compute_metrics(all_labels, all_probs)
+    metrics = compute_metrics(all_labels, all_probs, class_names=class_names)
 
     return avg_loss, metrics
 
@@ -132,6 +139,9 @@ def main():
     parser.add_argument("--model", type=str, default="cnn_lstm",
                         choices=list(MODEL_REGISTRY.keys()),
                         help="Model architecture to train")
+    parser.add_argument("--task", type=str, default="superclass",
+                        choices=["superclass", "subclass"],
+                        help="Label granularity: superclass (5) or subclass (23)")
     parser.add_argument("--single-lead", action="store_true",
                         help="Train with Lead I only (Apple Watch simulation)")
     parser.add_argument("--device", type=str, default=None)
@@ -140,8 +150,15 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    # Override single-lead from command line
+    # Override from command line
     single_lead = args.single_lead or cfg["data"]["single_lead"]
+    task = args.task
+    if task == "subclass":
+        num_classes = NUM_SUBCLASSES
+        class_names = SUBCLASS_NAMES
+    else:
+        num_classes = NUM_SUPERCLASSES
+        class_names = SUPERCLASS_NAMES
 
     # Device selection
     if args.device:
@@ -160,6 +177,7 @@ def main():
         data_dir=cfg["data"]["data_dir"],
         sampling_rate=cfg["data"]["sampling_rate"],
         single_lead=single_lead,
+        task=task,
         cache_dir=cfg["data"]["cache_dir"],
     )
     print(f"Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
@@ -182,7 +200,7 @@ def main():
     model_cls = MODEL_REGISTRY[args.model]
     model = model_cls(
         in_channels=in_channels,
-        num_classes=cfg["model"]["num_classes"],
+        num_classes=num_classes,
         cnn_channels=cfg["model"].get("cnn_channels", [64, 128, 256, 256]),
         cnn_kernels=cfg["model"].get("cnn_kernels", [15, 11, 7, 5]),
         lstm_hidden=cfg["model"].get("lstm_hidden", 128),
@@ -220,7 +238,7 @@ def main():
     save_dir = cfg["output"]["save_dir"]
     os.makedirs(save_dir, exist_ok=True)
     lead_tag = "single_lead" if single_lead else "12_lead"
-    tag = f"{args.model}_{lead_tag}"
+    tag = f"{args.model}_{task}_{lead_tag}"
 
     best_auc = 0.0
     patience_counter = 0
@@ -231,7 +249,7 @@ def main():
         t0 = time.time()
 
         train_loss = train_epoch(model, train_loader, criterion, optimiser, device)
-        val_loss, val_metrics = evaluate(model, val_loader, criterion, device)
+        val_loss, val_metrics = evaluate(model, val_loader, criterion, device, class_names)
         scheduler.step()
 
         elapsed = time.time() - t0
@@ -264,7 +282,7 @@ def main():
     # Re-create a fresh (non-compiled) model for clean loading
     eval_model = model_cls(
         in_channels=in_channels,
-        num_classes=cfg["model"]["num_classes"],
+        num_classes=num_classes,
         cnn_channels=cfg["model"].get("cnn_channels", [64, 128, 256, 256]),
         cnn_kernels=cfg["model"].get("cnn_kernels", [15, 11, 7, 5]),
         lstm_hidden=cfg["model"].get("lstm_hidden", 128),
@@ -273,12 +291,12 @@ def main():
     ).to(device)
     eval_model.load_state_dict(best_sd)
     model = eval_model
-    test_loss, test_metrics = evaluate(model, test_loader, criterion, device)
+    test_loss, test_metrics = evaluate(model, test_loader, criterion, device, class_names)
 
     print(f"Test loss: {test_loss:.4f}")
     print(f"Macro AUC: {test_metrics['macro_auc']:.4f}")
     print(f"Macro F1:  {test_metrics['macro_f1']:.4f}")
-    for name in SUPERCLASS_NAMES:
+    for name in class_names:
         key = f"auc_{name}"
         if key in test_metrics:
             print(f"  {name:5s}: AUC = {test_metrics[key]:.4f}")
