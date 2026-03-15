@@ -57,11 +57,18 @@ class GradCAM1D:
         Returns:
             Heatmap array of shape (time,), normalised to [0, 1].
         """
+        # cuDNN LSTM does not support backward in eval mode, so we
+        # temporarily switch to train mode for gradient computation
+        was_training = self.model.training
+        self.model.train()
+
         x = x.clone().requires_grad_(True)
         output = self.model(x)
 
         self.model.zero_grad()
         output[0, target_class].backward()
+
+        self.model.train(was_training)
 
         # Channel-wise importance weights via global average pooling
         weights = self.gradients.mean(dim=-1, keepdim=True)
