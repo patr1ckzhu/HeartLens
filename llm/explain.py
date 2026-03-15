@@ -160,7 +160,7 @@ def generate_explanation(
     fs: float = 500.0,
     ecg_stats: Optional[dict] = None,
     api_key: Optional[str] = None,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5.4",
     base_url: Optional[str] = None,
 ) -> str:
     """Generate a natural language explanation of the ECG analysis.
