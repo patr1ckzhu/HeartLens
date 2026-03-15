@@ -176,6 +176,10 @@ def main():
         dropout=cfg["model"]["dropout"],
     ).to(device)
 
+    # torch.compile for optimised GPU kernels (PyTorch 2.x)
+    if device.type == "cuda":
+        model = torch.compile(model)
+
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters: {num_params:,}")
 
