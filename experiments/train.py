@@ -144,8 +144,16 @@ def main():
                         help="Label granularity: superclass (5) or subclass (23)")
     parser.add_argument("--single-lead", action="store_true",
                         help="Train with Lead I only (Apple Watch simulation)")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
+
+    # Reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
