@@ -139,8 +139,8 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     plot_roc_curves(y_true, y_prob,
                     os.path.join(args.output_dir, "roc_curves.pdf"))
-    plot_confusion_matrix(y_true, y_prob, threshold=0.5,
-                          os.path.join(args.output_dir, "confusion_matrix.pdf"))
+    cm_path = os.path.join(args.output_dir, "confusion_matrix.pdf")
+    plot_confusion_matrix(y_true, y_prob, 0.5, cm_path)
 
 
 if __name__ == "__main__":
