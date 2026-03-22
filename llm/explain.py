@@ -66,11 +66,6 @@ def build_prompt(
     else:
         lines.append("**No abnormalities detected above threshold.**")
 
-    lines.append("")
-    lines.append("**All class probabilities:**")
-    for cls, prob in sorted(pred_probs.items(), key=lambda x: -x[1]):
-        lines.append(f"- {cls}: {prob:.1%}")
-
     if ecg_stats:
         lines.append("")
         lines.append("**Signal statistics:**")
@@ -87,11 +82,14 @@ def build_prompt(
         "",
         "## Instructions",
         "1. Summarise the key findings in 2-3 sentences.",
-        "2. Explain what each detected abnormality means clinically.",
+        "2. ONLY discuss abnormalities listed above as 'Detected abnormalities'."
+        " Do NOT mention, speculate about, or discuss any class that was not"
+        " detected. If no abnormalities were detected, simply state the"
+        " recording appears normal.",
         "3. If Grad-CAM attention regions are provided, comment on whether "
         "the model is focusing on clinically expected waveform features.",
         "4. Suggest appropriate follow-up actions.",
-        "5. Include a brief disclaimer about automated screening limitations.",
+        "5. ALWAYS include a brief disclaimer about automated screening limitations.",
     ])
 
     return "\n".join(lines)
