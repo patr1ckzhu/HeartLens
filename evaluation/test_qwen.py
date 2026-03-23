@@ -4,14 +4,20 @@ Test Qwen3.5-9B with our ECG explanation prompt (no fine-tuning).
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-print("Loading Qwen3.5-9B (4-bit)...")
+print("Loading Qwen3.5-9B (4-bit NF4 + double quant)...")
 model_name = "Qwen/Qwen3.5-9B"
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+quant_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     quantization_config=quant_config,
     device_map="auto",
+    low_cpu_mem_usage=True,
     trust_remote_code=True,
 )
 print(f"Model loaded. GPU memory: {torch.cuda.memory_allocated()/1e9:.1f} GB")
