@@ -3,8 +3,9 @@ Test Qwen3.5-9B with our ECG explanation prompt (no fine-tuning).
 """
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import modelopt.torch.quantization as mtq
 
-print("Loading Qwen3.5-9B-NVFP4 (pre-quantized for Blackwell)...")
+print("Loading AxionML/Qwen3.5-9B-NVFP4...")
 model_name = "AxionML/Qwen3.5-9B-NVFP4"
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
@@ -12,6 +13,8 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
     trust_remote_code=True,
 )
+print("Restoring NVFP4 quantization state...")
+mtq.restore_from_hf(model, model_name)
 print(f"Model loaded. GPU memory: {torch.cuda.memory_allocated()/1e9:.1f} GB")
 
 # Test cases matching our eval_llm.py scenarios
