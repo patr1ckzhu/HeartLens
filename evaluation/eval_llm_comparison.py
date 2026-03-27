@@ -30,17 +30,18 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen3.5:4b"
 
 
-def generate_qwen_explanation(
+def generate_ollama_explanation(
     pred_probs: dict[str, float],
+    model: str = OLLAMA_MODEL,
     gradcam_regions: list[str] | None = None,
 ) -> str:
-    """Query the local Qwen3.5-4B model via ollama."""
+    """Query a local model via ollama."""
     prompt = build_prompt(pred_probs, gradcam_regions=gradcam_regions)
     try:
         resp = requests.post(
             OLLAMA_URL,
             json={
-                "model": OLLAMA_MODEL,
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "options": {"temperature": 0.3, "num_predict": 500},
                 "think": False,
@@ -51,7 +52,7 @@ def generate_qwen_explanation(
         resp.raise_for_status()
         return resp.json()["message"]["content"]
     except Exception as e:
-        return f"[Qwen API error: {e}]"
+        return f"[Ollama API error: {e}]"
 
 
 # ---------------------------------------------------------------------------
@@ -163,16 +164,18 @@ TEST_CASES = [
 def run_comparison():
     systems = {
         "GPT-5.4": lambda probs: generate_explanation(probs),
-        "Qwen3.5-4B": lambda probs: generate_qwen_explanation(probs),
+        "Qwen3.5-4B": lambda probs: generate_ollama_explanation(probs, "qwen3.5:4b"),
+        "Qwen3.5-2B": lambda probs: generate_ollama_explanation(probs, "qwen3.5:2b"),
+        "Qwen3.5-0.8B": lambda probs: generate_ollama_explanation(probs, "qwen3.5:0.8b"),
         "Rule-based": lambda probs: generate_rule_based_explanation(probs),
     }
 
     all_results = {name: [] for name in systems}
     all_outputs = {name: [] for name in systems}
 
-    print("=" * 70)
-    print("LLM EXPLANATION COMPARISON: GPT-5.4 vs Qwen3.5-4B vs Rule-based")
-    print("=" * 70)
+    print("=" * 80)
+    print("LLM EXPLANATION COMPARISON: GPT-5.4 vs Qwen3.5 (4B/2B/0.8B) vs Rule-based")
+    print("=" * 80)
 
     for case in TEST_CASES:
         print(f"\n{'─' * 70}")
@@ -212,8 +215,11 @@ def run_comparison():
     print(f"\n{'=' * 70}")
     print("SUMMARY")
     print(f"{'=' * 70}")
-    print(f"\n{'Metric':<35} {'GPT-5.4':>10} {'Qwen3.5-4B':>12} {'Rule-based':>12}")
-    print("-" * 70)
+    header = f"{'Metric':<28}"
+    for sys_name in systems:
+        header += f" {sys_name:>13}"
+    print(f"\n{header}")
+    print("-" * len(header))
 
     for sys_name in systems:
         results = all_results[sys_name]
@@ -251,11 +257,11 @@ def run_comparison():
               "Avg hedging words", "Avg word count", "Avg latency (s)"]
 
     for label, metric in zip(labels, metrics):
-        vals = []
+        row = f"{label:<28}"
         for sys_name in systems:
             v = all_results[sys_name]["summary"][metric]
-            vals.append(str(v))
-        print(f"{label:<35} {vals[0]:>10} {vals[1]:>12} {vals[2]:>12}")
+            row += f" {str(v):>13}"
+        print(row)
 
     # Save results
     save_dir = os.path.join("results", "llm_comparison")
