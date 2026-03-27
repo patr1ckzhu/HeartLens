@@ -51,7 +51,7 @@ class CNNTransformer(nn.Module):
         cnn_channels: list[int] = [64, 128, 256, 256],
         cnn_kernels: list[int] = [15, 11, 7, 5],
         num_heads: int = 8,
-        num_transformer_layers: int = 2,
+        num_transformer_layers: int = 4,
         dropout: float = 0.4,
         **kwargs,
     ):
