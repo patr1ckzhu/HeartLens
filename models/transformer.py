@@ -51,8 +51,8 @@ class CNNTransformer(nn.Module):
         cnn_channels: list[int] = [64, 128, 256, 256],
         cnn_kernels: list[int] = [15, 11, 7, 5],
         num_heads: int = 8,
-        num_transformer_layers: int = 4,
-        dropout: float = 0.3,
+        num_transformer_layers: int = 2,
+        dropout: float = 0.4,
         **kwargs,
     ):
         super().__init__()
@@ -61,7 +61,7 @@ class CNNTransformer(nn.Module):
         for ch_out, ks in zip(cnn_channels, cnn_kernels):
             layers.append(ConvBlock(ch_in, ch_out, ks, pool_size=2, dropout=dropout * 0.5))
             ch_in = ch_out
-        layers.append(nn.MaxPool1d(4))
+        layers.append(nn.MaxPool1d(2))
         self.cnn = nn.Sequential(*layers)
 
         d_model = cnn_channels[-1]
