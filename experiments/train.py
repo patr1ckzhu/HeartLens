@@ -13,6 +13,7 @@ import time
 import yaml
 import numpy as np
 import torch
+torch.set_float32_matmul_precision("high")
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, f1_score
