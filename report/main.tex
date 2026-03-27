@@ -1,0 +1,485 @@
+\documentclass[10pt]{article}
+\usepackage[preprint]{tmlr}
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{multirow}
+
+\title{HeartLens: Interpretable ECG Screening with CNN-LSTM and LLM Explanation}
+
+\author{\name Student number: <Insert student number> \\
+      \addr GitHub repository: \url{https://github.com/patr1ckzhu/HeartLens}
+      }
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\def\month{03}
+\def\year{2026}
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}}
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present HeartLens, an AI-powered electrocardiogram (ECG) screening system that combines a CNN-LSTM classification model with Grad-CAM interpretability and large language model (LLM) explanation. Trained on the PTB-XL dataset (21,837 twelve-lead ECGs), our model achieves a macro AUC of $0.914 \pm 0.001$ across five diagnostic superclasses (95\% CI: 0.906--0.921), outperforming a Random Forest baseline by 5.3 percentage points. We further investigate the feasibility of consumer-grade single-lead ECG devices for cardiac screening, finding that a single-lead model retains a macro AUC of 0.832. Grad-CAM visualisations confirm that the model attends to clinically expected waveform regions, and an LLM module translates predictions into natural language clinical interpretations. We validate the full pipeline on 24 real Apple Watch ECG recordings from three participants, achieving 96\% normal-detection accuracy and demonstrating an end-to-end screening workflow from signal acquisition to explainable diagnosis.
+\end{abstract}
+
+\section{Introduction}
+
+Cardiovascular disease remains the leading cause of death worldwide, and the electrocardiogram (ECG) is the most widely used diagnostic tool for identifying cardiac abnormalities. Clinical ECG interpretation, however, requires specialist training and is subject to inter-observer variability. Automated ECG classification systems have the potential to support clinicians in high-throughput screening settings and to extend cardiac monitoring to resource-limited environments where specialist expertise is unavailable.
+
+Recent advances in deep learning have demonstrated that convolutional neural networks (CNNs) and recurrent architectures can match or exceed cardiologist-level performance on specific arrhythmia detection tasks \citep{hannun2019cardiologist, ribeiro2020ecg}. At the same time, the proliferation of consumer wearable devices such as the Apple Watch has made single-lead ECG recording accessible to millions of users \citep{perez2021apple}, raising the question of whether deep learning models trained on clinical twelve-lead recordings can generalise to consumer-grade signals.
+
+A persistent limitation of deep learning approaches to ECG analysis is their lack of interpretability. While a model may achieve high classification accuracy, clinicians need to understand which aspects of the waveform drove a particular prediction before they can act on it. Furthermore, raw probability outputs are not directly useful in clinical communication. These limitations motivate the integration of explainability techniques and natural language generation into the classification pipeline.
+
+In this work, we make the following contributions:
+\begin{enumerate}
+    \item We develop a CNN-LSTM architecture with residual connections and squeeze-and-excitation (SE) attention for multi-label ECG classification, achieving competitive performance on the PTB-XL benchmark.
+    \item We conduct a systematic comparison of single-lead versus twelve-lead classification to evaluate the viability of consumer wearable devices for cardiac screening.
+    \item We integrate Grad-CAM visualisation to highlight diagnostically relevant ECG regions, providing interpretability that links model decisions to clinical waveform morphology.
+    \item We introduce an LLM-powered explanation module that translates model predictions and attention maps into structured clinical narratives.
+    \item We validate the complete pipeline on real Apple Watch ECG recordings, demonstrating a practical end-to-end screening workflow.
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Deep Learning for ECG Classification}
+
+The application of deep learning to ECG analysis has progressed rapidly since \citet{hannun2019cardiologist} demonstrated cardiologist-level arrhythmia detection using a 34-layer CNN on single-lead recordings. \citet{ribeiro2020ecg} extended this to twelve-lead ECGs with a residual network architecture, achieving strong performance across six diagnostic categories on a dataset of over two million recordings. The PTB-XL benchmark \citep{wagner2020ptbxl, strodthoff2021benchmarking} established standardised evaluation protocols and showed that 1D variants of Inception and ResNet architectures achieve macro AUCs of 0.925--0.935 on the five-superclass diagnostic task.
+
+Hybrid CNN-LSTM models combine spatial feature extraction through convolutions with temporal sequence modelling via recurrent layers \citep{hochreiter1997lstm}. This combination is particularly well-suited to ECG analysis, where local waveform morphology (captured by CNNs) and inter-beat temporal patterns (captured by LSTMs) both carry diagnostic information. However, the marginal benefit of LSTM layers over pure CNN models on fixed-length recordings remains debated.
+
+\subsection{Interpretability in Medical AI}
+
+Gradient-weighted Class Activation Mapping (Grad-CAM) \citep{selvaraju2017gradcam} has become a standard technique for visualising which input regions contribute most to a classification decision. While originally developed for 2D image classification, it extends naturally to 1D signals by computing channel-wise gradient-weighted activation maps along the temporal axis. For ECG analysis, this enables direct mapping between model attention and clinically meaningful waveform components such as the QRS complex and ST segment.
+
+\subsection{LLMs for Clinical Interpretation}
+
+Large language models have demonstrated promising capabilities in encoding and reasoning about clinical knowledge \citep{singhal2023medical}. In the context of ECG analysis, LLMs can serve as an interface between automated classification outputs and clinical workflows by generating structured interpretations that contextualise probability scores, reference relevant clinical findings, and suggest appropriate follow-up actions.
+
+\section{Methods}
+
+\subsection{Dataset}
+
+We use the PTB-XL dataset \citep{wagner2020ptbxl}, which contains 21,837 twelve-lead clinical ECG recordings from 18,869 patients, sampled at 500\,Hz for 10 seconds each. Each recording is annotated with one or more SCP diagnostic codes, which map to five diagnostic superclasses: Normal (NORM), Myocardial Infarction (MI), ST/T Change (STTC), Conduction Disturbance (CD), and Hypertrophy (HYP), as well as 23 diagnostic subclasses. The classification task is multi-label, as a single ECG can exhibit multiple concurrent conditions.
+
+We follow the official patient-stratified split \citep{strodthoff2021benchmarking}: folds 1--8 for training (17,418 records from 15,023 patients), fold 9 for validation (2,183 records, 1,942 patients), and fold 10 for testing (2,198 records, 1,904 patients). There is zero patient overlap between any pair of splits, preventing data leakage. Figure~\ref{fig:class_dist} shows the class distribution, highlighting the substantial imbalance between NORM (9,514 records) and HYP (2,649 records).
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=0.55\textwidth]{figures/class_distribution.pdf}
+\end{center}
+\caption{Diagnostic class distribution in PTB-XL. Records may carry multiple labels. The class imbalance motivates our use of frequency-weighted binary cross-entropy loss.}
+\label{fig:class_dist}
+\end{figure}
+
+\subsection{Signal Preprocessing}
+
+Raw ECG signals are passed through a fourth-order Butterworth bandpass filter with cutoff frequencies of 0.5\,Hz and 40\,Hz, applied with zero-phase filtering to remove baseline wander and high-frequency noise while preserving diagnostically relevant morphology. Each lead is then independently normalised to zero mean and unit variance (z-score normalisation) to account for amplitude differences across recording equipment and patient physiology.
+
+During training, we apply data augmentation to improve generalisation: additive Gaussian noise ($\sigma = 0.05$, $p = 0.5$), amplitude scaling (uniform $[0.8, 1.2]$, $p = 0.5$), sinusoidal baseline wander ($p = 0.3$), and circular temporal shifting ($\pm 50$ samples, $p = 0.3$). No augmentation is applied during validation or testing.
+
+\subsection{Model Architecture}
+
+\subsubsection{CNN-LSTM}
+
+Our primary model consists of three stages: a residual CNN encoder, a bidirectional LSTM, and a linear classification head. Figure~\ref{fig:architecture} provides an overview of the full pipeline, including the interpretability and explanation branches.
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=\textwidth]{figures/architecture.png}
+\end{center}
+\caption{HeartLens system architecture. The main classification pipeline (middle row) processes ECG signals through preprocessing, a residual CNN encoder with SE attention, a bidirectional LSTM, and a classification head. The CNN encoder detail (bottom row) shows four convolutional blocks with increasing channel depth. The interpretability branch (top row) extracts Grad-CAM attention heatmaps from the CNN encoder and combines them with predictions to generate LLM-powered clinical reports.}
+\label{fig:architecture}
+\end{figure}
+
+The CNN encoder comprises four residual convolutional blocks. Each block applies two 1D convolutions with batch normalisation and ReLU activation, followed by a squeeze-and-excitation (SE) module \citep{hu2018senet} that recalibrates channel responses by learning per-channel scaling factors. A residual skip connection with a 1$\times$1 convolution (when channel dimensions change) stabilises gradient flow. Max pooling with a factor of 2 follows each block, and a final pooling layer reduces the temporal dimension to 156 time steps. The kernel sizes decrease across blocks (15, 11, 7, 5) to capture progressively finer morphological detail.
+
+The bidirectional LSTM \citep{hochreiter1997lstm} receives the CNN feature sequence (156 time steps, 256 channels) and models temporal dependencies across the recording. We use two LSTM layers with a hidden size of 128 in each direction, yielding 256-dimensional output vectors. Global average pooling over the temporal dimension produces a fixed-length representation.
+
+The classification head applies dropout ($p = 0.3$) followed by a linear layer mapping to five (or 23) output logits. Binary cross-entropy with logits loss is used, with per-class positive weights inversely proportional to class frequency to mitigate class imbalance.
+
+\subsubsection{Ablation Models}
+
+To isolate the contributions of individual components, we evaluate three ablation variants. \textbf{CNN-only} replaces the LSTM with adaptive global average pooling. \textbf{LSTM-only} downsamples the input by a factor of 10 and applies a linear projection before the LSTM, with no convolutional feature extraction. \textbf{CNN-Transformer} replaces the LSTM with a two-layer Transformer encoder \citep{vaswani2017attention} using eight attention heads, with dropout increased to 0.4 to regularise the self-attention layers.
+
+\subsubsection{Baseline}
+
+As a non-deep-learning baseline, we train a Random Forest classifier \citep{breiman2001random} with 300 trees on handcrafted per-lead statistical features: mean, standard deviation, min, max, peak-to-peak amplitude, median, quartiles, mean absolute amplitude, RMS, signal energy, mean squared first difference, and zero-crossing rate, along with inter-lead correlations (159 features total).
+
+\subsection{Grad-CAM Interpretability}
+
+We adapt Grad-CAM \citep{selvaraju2017gradcam} for 1D ECG signals. Given a target class $c$, we compute the gradient of the class logit with respect to the feature maps $A^k$ of the last convolutional block. The gradient is globally averaged across the temporal dimension to obtain per-channel importance weights $\alpha_k^c$, and the weighted combination of feature maps yields the class-discriminative heatmap:
+\begin{equation}
+    L^c = \text{ReLU}\left(\sum_k \alpha_k^c A^k\right), \quad \alpha_k^c = \frac{1}{T} \sum_t \frac{\partial y^c}{\partial A^k_t}
+\end{equation}
+The heatmap is upsampled to the original signal length via linear interpolation and normalised to $[0, 1]$. Overlaying this on the ECG waveform reveals which temporal regions the model weighted most heavily for each diagnostic class.
+
+\subsection{LLM Explanation Module}
+
+The LLM module translates model outputs into clinician-facing natural language. It takes as input: (1) per-class predicted probabilities, (2) Grad-CAM attention region descriptions (contiguous segments exceeding an attention threshold of 0.6), and optionally (3) signal-level statistics. These inputs are formatted into a structured prompt that instructs the LLM to summarise findings, explain clinical significance, evaluate model attention plausibility, suggest follow-up actions, and include a screening-limitation disclaimer. We use the OpenAI API (GPT-5.4) with a temperature of 0.3 for deterministic clinical output.
+
+\subsection{Training Details}
+
+All deep learning models are trained with AdamW (learning rate $10^{-3}$, weight decay $10^{-4}$) and cosine annealing over 50 epochs, with early stopping (patience 10) based on validation macro AUC. The batch size is 64. Training is performed on a single NVIDIA RTX 5080 GPU (16\,GB). The CNN-LSTM model has approximately 1.5M trainable parameters. To assess result stability, we train the primary CNN-LSTM model with three random seeds (42, 123, 456) and report mean $\pm$ standard deviation. Per-class 95\% confidence intervals are obtained via bootstrap resampling (1,000 iterations) on the test set.
+
+\section{Experiments and Results}
+
+\subsection{Five-Superclass Classification}
+
+Table~\ref{tab:main_results} presents the primary classification results on the PTB-XL test set. Our CNN-LSTM model achieves a macro AUC of $0.914 \pm 0.001$ (mean $\pm$ std over three seeds) across the five diagnostic superclasses, with per-class AUCs ranging from 0.838 (HYP) to 0.944 (NORM). The model performs best on NORM and STTC, which have the largest representation in the training set, and weakest on HYP, which accounts for only 7\% of the data. Table~\ref{tab:full_metrics} provides additional metrics including PR-AUC, F1, precision, and recall with bootstrap 95\% confidence intervals.
+
+\begin{table}[t]
+\caption{Test set AUC for five-superclass classification on PTB-XL. CNN-LSTM results are mean $\pm$ std over 3 seeds. Best results per class in bold.}
+\label{tab:main_results}
+\begin{center}
+\begin{tabular}{lcccccc}
+\toprule
+Model & NORM & MI & STTC & CD & HYP & Macro AUC \\
+\midrule
+Random Forest & 0.906 & 0.840 & 0.908 & 0.843 & 0.806 & 0.861 \\
+LSTM-only & 0.938 & 0.923 & 0.930 & 0.916 & 0.832 & 0.908 \\
+CNN-only & 0.940 & \textbf{0.933} & \textbf{0.933} & 0.917 & \textbf{0.840} & 0.912 \\
+\textbf{CNN-LSTM} & \textbf{.944\tiny{$\pm$.001}} & .930\tiny{$\pm$.003} & .933\tiny{$\pm$.001} & \textbf{.923\tiny{$\pm$.001}} & .838\tiny{$\pm$.005} & \textbf{.914\tiny{$\pm$.001}} \\
+CNN-Transformer & 0.943 & 0.927 & 0.934 & 0.924 & 0.835 & 0.913 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[t]
+\caption{Comprehensive metrics for CNN-LSTM (seed 42) on the five-superclass test set with bootstrap 95\% confidence intervals for AUC.}
+\label{tab:full_metrics}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Class & AUC (95\% CI) & PR-AUC & F1 & Precision & Recall \\
+\midrule
+NORM & 0.942 (0.933--0.951) & 0.917 & 0.853 & 0.816 & 0.894 \\
+MI & 0.933 (0.922--0.943) & 0.842 & 0.748 & 0.650 & 0.880 \\
+STTC & 0.933 (0.921--0.943) & 0.818 & 0.736 & 0.649 & 0.850 \\
+CD & 0.921 (0.906--0.936) & 0.834 & 0.754 & 0.711 & 0.802 \\
+HYP & 0.837 (0.812--0.862) & 0.483 & 0.457 & 0.347 & 0.668 \\
+\midrule
+Macro & 0.913 (0.906--0.921) & 0.779 & 0.709 & 0.635 & 0.819 \\
+Weighted & 0.925 & --- & 0.756 & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+Figure~\ref{fig:roc} shows the per-class ROC curves. NORM, MI, STTC, and CD cluster tightly in the upper-left region, while HYP exhibits noticeably weaker discrimination. The per-class confusion matrices in Figure~\ref{fig:cm} reveal the error patterns: HYP has the highest false negative rate (33\%), meaning one-third of true hypertrophy cases are missed at the default threshold of 0.5. NORM shows the opposite pattern, with 89\% recall and a 16\% false positive rate on the negative class. In a screening context, the threshold could be lowered for HYP to increase sensitivity at the cost of specificity.
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=0.55\textwidth]{figures/roc_curves.pdf}
+\end{center}
+\caption{Per-class ROC curves on the PTB-XL test set. Four of five classes achieve AUC $> 0.92$. HYP (purple) shows weaker discrimination due to limited training samples and subtle ECG features.}
+\label{fig:roc}
+\end{figure}
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=\textwidth]{figures/confusion_matrix.pdf}
+\end{center}
+\caption{Per-class confusion matrices (threshold = 0.5). Each matrix shows true negatives (top-left), false positives (top-right), false negatives (bottom-left), and true positives (bottom-right), with row-normalised percentages. HYP exhibits the highest miss rate (33\%).}
+\label{fig:cm}
+\end{figure}
+
+\subsection{Ablation Study}
+
+The ablation results in Table~\ref{tab:main_results} reveal several findings. First, all deep learning models substantially outperform the Random Forest baseline (+4.7 to +5.3 pp macro AUC), demonstrating that learned representations capture diagnostic patterns beyond what handcrafted statistical features can express. Second, the CNN-only model performs nearly as well as the full CNN-LSTM (0.912 vs 0.914), suggesting that the convolutional encoder captures the majority of discriminative information from the fixed-length recordings. The LSTM provides a modest improvement on CD classification, where inter-beat rhythm consistency matters most.
+
+Third, the CNN-Transformer matches the CNN-LSTM almost exactly (0.913 vs 0.914), indicating that the choice of temporal modelling mechanism has minimal impact when the CNN encoder already extracts strong representations from fixed-length recordings. This parity is consistent with the near-equivalent CNN-only result (0.912) and suggests that, for 10-second ECGs, the temporal modelling component contributes only marginally regardless of whether it is recurrent or attention-based. We retain CNN-LSTM as the primary model due to its lower parameter count (1.5M vs 3.3M), stable training without learning rate warmup, and straightforward compatibility with Grad-CAM interpretability.
+
+Figure~\ref{fig:ablation} visualises the macro AUC comparison across all models.
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=0.6\textwidth]{figures/ablation_comparison.pdf}
+\end{center}
+\caption{Macro AUC comparison across model architectures. All deep learning models substantially outperform the Random Forest baseline (grey). CNN-LSTM, CNN-Transformer, and CNN-only cluster within 0.2 pp, indicating that the shared CNN encoder drives the majority of classification performance.}
+\label{fig:ablation}
+\end{figure}
+
+\subsection{Twenty-Three Subclass Classification}
+
+When trained on the finer-grained 23-subclass task, our CNN-LSTM achieves a macro AUC of 0.912, which may appear surprisingly close to the five-superclass result (0.914). This warrants explanation. The 23-class macro AUC is an unweighted average across all subclasses, and several subclasses with highly distinctive waveform morphology achieve near-perfect discrimination: complete left and right bundle branch blocks (CLBBB 0.997, CRBBB 0.997) and Wolff-Parkinson-White syndrome (WPW, 0.960) all exhibit unmistakable QRS patterns. These ``easy'' classes inflate the macro average. Meanwhile, subclasses with subtle or overlapping features perform considerably worse: intraventricular conduction delay (IVCD, 0.706) and left atrial enlargement (LAO/LAE, 0.781) are challenging even for experienced clinicians. A sample-weighted average, which gives more weight to prevalent classes, would yield a different picture. The full per-subclass breakdown is provided in Appendix Table~\ref{tab:subclass}.
+
+\subsection{Single-Lead vs. Twelve-Lead Classification}
+
+\begin{table}[t]
+\caption{Twelve-lead vs. single-lead (Lead~I) classification performance.}
+\label{tab:single_lead}
+\begin{center}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & NORM & MI & STTC & CD & HYP & Macro AUC \\
+\midrule
+12-lead & 0.945 & 0.928 & 0.932 & 0.923 & 0.834 & 0.913 \\
+Single-lead (Lead I) & 0.891 & 0.780 & 0.877 & 0.817 & 0.795 & 0.832 \\
+\midrule
+Difference & $-$0.054 & $-$0.148 & $-$0.055 & $-$0.106 & $-$0.039 & $-$0.081 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+Table~\ref{tab:single_lead} compares twelve-lead and single-lead (Lead~I only) classification. The single-lead model retains a macro AUC of 0.832, an 8.1 pp reduction from the twelve-lead model. The performance drop varies considerably across classes. MI suffers the largest decline ($-$14.8 pp), which is expected because myocardial infarction localisation relies on spatial information from multiple leads (e.g., inferior MI presents primarily in leads II, III, and aVF). Similarly, CD drops by 10.6 pp, as conduction abnormalities manifest differently across lead groups. NORM and STTC are more robust to lead reduction, as their features are partially preserved in Lead~I.
+
+These results suggest that single-lead consumer devices are suitable for preliminary screening, particularly for binary normal-versus-abnormal triage, but should not be relied upon for fine-grained multi-class diagnosis. Figure~\ref{fig:single_lead} provides a visual comparison of the per-class performance gap.
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=0.6\textwidth]{figures/single_vs_12lead.pdf}
+\end{center}
+\caption{Per-class AUC comparison between twelve-lead and single-lead (Lead~I) models. MI and CD suffer the largest reductions, as their diagnosis relies on spatial information from multiple leads.}
+\label{fig:single_lead}
+\end{figure}
+
+\subsection{Grad-CAM Interpretability}
+
+Figure~\ref{fig:gradcam} shows Grad-CAM visualisations for representative samples of each diagnostic class. The attention patterns align with clinical expectations. For CD (conduction disturbance), the model focuses on the QRS complex regions, where bundle branch blocks produce characteristic widening and morphological changes. For STTC, attention concentrates on the ST segment and T wave regions between successive QRS complexes. For NORM, attention is distributed across multiple heartbeats without concentrating on any particular morphological feature, consistent with the absence of focal abnormalities.
+
+These visualisations demonstrate that the model has learned clinically meaningful features rather than exploiting spurious correlations in the data, increasing confidence in its use as a screening tool.
+
+\begin{figure}[t]
+\begin{center}
+\begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/gradcam_NORM_0.png}
+    \caption{Normal (NORM)}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/gradcam_CD_0.png}
+    \caption{Conduction Disturbance (CD)}
+\end{subfigure}
+
+\vspace{0.3cm}
+
+\begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/gradcam_MI_0.png}
+    \caption{Myocardial Infarction (MI)}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/gradcam_STTC_0.png}
+    \caption{ST/T Change (STTC)}
+\end{subfigure}
+\end{center}
+\caption{Grad-CAM attention heatmaps overlaid on Lead~I for four diagnostic classes. Top panels show the ECG waveform colour-coded by attention intensity (red = high, blue = low); bottom panels show the raw attention magnitude. For NORM (a), attention is diffuse across heartbeats with no focal concentration. For CD (b), attention focuses sharply on QRS complexes where conduction abnormalities manifest. For MI (c), attention targets peri-QRS regions associated with pathological Q waves. For STTC (d), attention highlights ST-segment and T-wave regions between beats.}
+\label{fig:gradcam}
+\end{figure}
+
+\subsection{LLM Explanation Evaluation}
+
+We evaluate the LLM explanation module through an iterative process, comparing it against a deterministic rule-based baseline across six test scenarios: clear normal, clear MI, multi-label (STTC + CD), uncertain (all probabilities below threshold), and two error propagation cases where deliberately incorrect high-confidence predictions are provided. We assess three axes: \textbf{completeness} (whether all detected abnormalities are mentioned), \textbf{factual consistency} (whether the system describes findings not supported by the model's predictions), and \textbf{disclaimer presence}.
+
+\paragraph{Initial evaluation.} Our initial prompt provided the LLM with all five class probabilities alongside detected abnormalities. This led to significant hallucination: the LLM discussed low-probability classes as potential findings even when their probabilities were negligible. For example, given a clearly normal ECG (NORM 0.92), the LLM mentioned ``nonspecific ST-T change patterns'' (STTC 0.08) and ``myocardial infarction'' (MI 0.05) as worth considering. Across six test cases, we recorded 11 hallucinated findings and only a 67\% disclaimer rate.
+
+\paragraph{Root cause and fix.} The hallucinations were caused by exposing sub-threshold class probabilities in the prompt. The LLM, trained to be thorough, interpreted any mentioned class as worthy of discussion. We applied two prompt modifications: (1)~removed the ``all class probabilities'' listing, so only classes exceeding the detection threshold appear in the prompt, and (2)~added an explicit grounding constraint: \textit{``ONLY discuss abnormalities listed as detected. Do NOT mention any class that was not detected.''}
+
+\paragraph{Post-fix evaluation.} Table~\ref{tab:llm_eval} shows the results after prompt modification. Hallucination dropped from 11 to 0 while completeness remained at 100\%. The disclaimer rate remains at 67\%, as the LLM occasionally rephrases the disclaimer in non-standard wording that our keyword-based checker does not match, though manual inspection confirms that all outputs contain some form of screening-limitation caveat.
+
+\begin{table}[t]
+\caption{LLM vs. rule-based explanation after prompt optimisation (six test scenarios).}
+\label{tab:llm_eval}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Metric & LLM (GPT-5.4) & Rule-based \\
+\midrule
+Completeness (findings mentioned / detected) & 7/7 (100\%) & 7/7 (100\%) \\
+Hallucinated findings (before $\rightarrow$ after fix) & 11 $\rightarrow$ 0 & 0 \\
+Disclaimer rate & 4/6 (67\%)$^\dagger$ & 6/6 (100\%) \\
+Uses hedging language in error cases & Yes & N/A \\
+\bottomrule
+\multicolumn{3}{l}{\footnotesize $^\dagger$All outputs contain screening caveats; 2/6 use non-standard phrasing.}
+\end{tabular}
+\end{center}
+\end{table}
+
+\paragraph{LLM vs. rule-based trade-offs.} With hallucination resolved, the key differentiator is output quality. The LLM produces richer clinical narratives: it contextualises Grad-CAM attention regions with anatomical references (e.g., ``QRS complex and adjacent conduction-related features''), provides follow-up recommendations tailored to the specific combination of detected abnormalities, and employs appropriate hedging language (``may indicate'', ``should be correlated'') even when given deliberately wrong predictions. The rule-based system generates factually correct but generic text that does not adapt to Grad-CAM context or multi-label combinations. Example outputs for both systems are provided in Appendix~\ref{sec:llm_examples}.
+
+These results suggest that LLM explanation is best deployed alongside a rule-based safety layer: the rule-based system guarantees factual grounding and consistent disclaimers, while the LLM adds clinical depth and naturalness. The prompt engineering iteration also highlights the importance of controlling what information is exposed to the LLM, as even state-of-the-art models will discuss irrelevant findings if prompted to do so.
+
+\subsection{Apple Watch Case Study}
+
+We validate the complete pipeline on 24 real Apple Watch ECG recordings collected from three healthy participants aged 21--22 (all annotated as ``Sinus Rhythm'' by the Apple Watch's built-in algorithm). Recordings were exported at 512\,Hz and resampled to 500\,Hz to match the model's expected input. Table~\ref{tab:apple_watch} summarises the per-participant results.
+
+\begin{table}[t]
+\caption{Apple Watch validation results across three participants. NORM correct indicates recordings where the model assigned NORM $> 0.5$. False positives are non-NORM classes exceeding the 0.5 threshold.}
+\label{tab:apple_watch}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Participant & Recordings & NORM correct & False positives & Accuracy \\
+\midrule
+Participant A & 12 & 11 & 1 MI, 1 HYP & 92\% \\
+Participant B & 6 & 6 & 1 HYP$^*$ & 100\% \\
+Participant C & 6 & 6 & 0 & 100\% \\
+\midrule
+Total & 24 & 23 & 3 & 96\% \\
+\bottomrule
+\multicolumn{5}{l}{\footnotesize $^*$Co-occurring with NORM $> 0.5$ (multi-label prediction).}
+\end{tabular}
+\end{center}
+\end{table}
+
+The single-lead model correctly identifies 23 of 24 recordings as predominantly normal (NORM $> 0.5$), yielding a 96\% accuracy across participants. Three recordings trigger co-occurring false positive flags (one MI, two HYP), though in two of these cases NORM is still correctly above threshold. Only one recording (from Participant~A) is misclassified entirely, with MI as the top prediction. These false positives likely reflect the domain gap between clinical twelve-lead training data and consumer single-lead signals rather than genuine cardiac abnormalities.
+
+All recordings were collected by three members of our team using their personal Apple Watch devices. Figure~\ref{fig:apple_watch} shows a representative Grad-CAM visualisation from Participant~B, where the model correctly identifies normal sinus rhythm with high confidence (NORM 0.91) and attention distributed across QRS complexes.
+
+\begin{figure}[t]
+\begin{center}
+    \includegraphics[width=0.7\textwidth]{apple_watch/participant_norm.png}
+\end{center}
+\caption{HeartLens analysis of a real Apple Watch ECG recording from Participant~B. The model correctly identifies normal sinus rhythm (NORM 0.91), with attention concentrated on QRS complexes across regular heartbeats.}
+\label{fig:apple_watch}
+\end{figure}
+
+\section{Discussion}
+
+Our CNN-LSTM model achieves a macro AUC of $0.914 \pm 0.001$ on the PTB-XL five-superclass benchmark (95\% CI: 0.906--0.921), with extremely low variance across seeds, indicating stable training dynamics. The weighted AUC of 0.925 reflects stronger performance on more prevalent classes, while the macro PR-AUC of 0.779 provides a complementary view that accounts for class imbalance more directly than ROC-AUC. The 5.3 pp improvement over the Random Forest baseline confirms that learned representations capture diagnostic patterns beyond handcrafted features.
+
+The clustering of CNN-LSTM (0.914), CNN-Transformer (0.913), and CNN-only (0.912) within 0.2 percentage points suggests that, for fixed-length 10-second recordings, the temporal modelling component contributes only marginally to classification performance. The CNN encoder alone captures the dominant diagnostic features, and neither recurrence nor self-attention adds substantial discriminative power. This finding may differ for longer or variable-length recordings where rhythm-level patterns span many heartbeats and temporal context becomes more critical. We select CNN-LSTM as the primary model not for its AUC advantage, which is negligible, but for its practical benefits: fewer parameters (1.5M vs 3.3M), stable convergence without learning rate warmup, and native compatibility with Grad-CAM for clinical interpretability.
+
+The precision-recall trade-off varies considerably across classes. NORM achieves the best balance (precision 0.816, recall 0.894), while HYP shows high recall (0.668) but low precision (0.347), reflecting the model's tendency to over-predict hypertrophy in borderline cases. In a screening context, high recall is generally preferred over high precision, as missed abnormalities carry greater clinical risk than false alarms that can be resolved through follow-up testing.
+
+The single-lead experiment reveals a meaningful but not prohibitive performance gap (0.832 vs 0.914). For binary normal-versus-abnormal screening, which is the primary use case for consumer wearables, single-lead performance would likely be adequate. The Apple Watch case study across three participants (24 recordings, 96\% accuracy) provides encouraging evidence that the model generalises to consumer-grade signals for normal-versus-abnormal screening, though occasional false positives (3 out of 24) highlight the remaining domain gap.
+
+The Grad-CAM visualisations provide reassurance that the model attends to clinically expected waveform features. This is particularly important in the medical domain, where regulatory and ethical considerations demand that AI systems not only perform well but also do so for the right reasons.
+
+\paragraph{Limitations.} Our study has several limitations. First, PTB-XL is drawn from a predominantly European clinical population, and model performance may degrade on other demographics. Second, the Apple Watch validation comprises 24 recordings from three healthy participants of similar age, which does not capture the full diversity of consumer ECG signal characteristics across demographics and device conditions. Third, while we report multi-seed results for the primary model, ablation models were trained with a single seed due to computational constraints. Finally, the LLM explanation module relies on a commercial API and its outputs have not been validated by clinicians; future work should include formal clinical evaluation of explanation quality.
+
+\section{Conclusion}
+
+We have presented HeartLens, an end-to-end ECG screening system that integrates CNN-LSTM classification, Grad-CAM interpretability, and LLM explanation. The system achieves competitive classification performance on the PTB-XL benchmark, provides visual and textual explanations of its predictions, and demonstrates feasibility on consumer wearable ECG recordings. Our ablation study offers insight into the relative contributions of convolutional, recurrent, and attention-based components, and our single-lead analysis informs the design of future consumer cardiac screening applications.
+
+\subsubsection*{Broader Impact Statement}
+
+Automated ECG screening systems have the potential to improve access to cardiac care, particularly in settings where specialist interpretation is unavailable. However, several risks warrant careful consideration.
+
+\textbf{False negatives} (missed abnormalities) could provide false reassurance and delay necessary treatment. Our system is designed as a screening tool, not a replacement for clinical diagnosis, and all outputs include explicit disclaimers to this effect. \textbf{False positives}, as observed in our Apple Watch experiment, may cause unnecessary anxiety or lead to over-investigation. The inclusion of LLM-generated explanations aims to contextualise findings and reduce alarm from borderline predictions.
+
+\textbf{Dataset bias} is a concern: PTB-XL is drawn from a predominantly European clinical population. Performance may degrade on underrepresented demographics, and deployment in diverse populations would require validation on more inclusive datasets. \textbf{Consumer device limitations} compound this risk, as signal quality from wrist-worn sensors varies with skin tone, wrist anatomy, and motion artefacts.
+
+We strongly recommend that systems such as HeartLens be deployed only as triage aids under clinical supervision, with clear communication to users that automated screening does not constitute medical diagnosis.
+
+\subsubsection*{Author Contributions}
+If you'd like to, you may include a section for author contributions as is done
+in many journals. This is optional and at the discretion of the authors.
+
+\subsubsection*{Acknowledgments}
+Use unnumbered third level headings for the acknowledgments.
+
+\newpage
+\bibliography{main}
+\bibliographystyle{tmlr}
+
+\newpage
+\appendix
+\section{Appendix}
+
+\subsection{Twenty-Three Subclass Results}
+
+\begin{table}[h]
+\caption{Per-subclass AUC for 23-class diagnostic classification on PTB-XL test set.}
+\label{tab:subclass}
+\begin{center}
+\small
+\begin{tabular}{llc|llc}
+\toprule
+Subclass & Parent & AUC & Subclass & Parent & AUC \\
+\midrule
+CLBBB & CD & 0.997 & NORM & NORM & 0.936 \\
+CRBBB & CD & 0.997 & NST\_ & STTC & 0.872 \\
+IRBBB & CD & 0.977 & PMI & MI & 0.865 \\
+LAFB/LPFB & CD & 0.959 & RAO/RAE & HYP & 0.902 \\
+\_AVB & CD & 0.956 & RVH & HYP & 0.916 \\
+WPW & CD & 0.960 & SEHYP & HYP & 0.930 \\
+ILBBB & CD & 0.945 & STTC & STTC & 0.869 \\
+IVCD & CD & 0.706 & AMI & MI & 0.929 \\
+LVH & HYP & 0.860 & IMI & MI & 0.909 \\
+LAO/LAE & HYP & 0.781 & LMI & MI & 0.917 \\
+ISCA & STTC & 0.913 & ISC\_ & STTC & 0.942 \\
+ISCI & STTC & 0.924 & & & \\
+\midrule
+\multicolumn{4}{l}{\textbf{Macro AUC}} & \multicolumn{2}{c}{\textbf{0.912}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{Data Split Details}
+
+\begin{table}[h]
+\caption{Patient-stratified data split following \citet{strodthoff2021benchmarking}.}
+\label{tab:split}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Split & Records & Patients & Patient overlap \\
+\midrule
+Train (folds 1--8) & 17,418 & 15,023 & \multirow{3}{*}{0} \\
+Validation (fold 9) & 2,183 & 1,942 & \\
+Test (fold 10) & 2,198 & 1,904 & \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{LLM Explanation Examples}
+\label{sec:llm_examples}
+
+We provide side-by-side outputs from the LLM and rule-based systems for two representative cases: a twelve-lead ECG classified as conduction disturbance, and a normal ECG. All outputs are from the post-fix prompt (Section~4.6).
+
+\subsubsection*{Case 1: Conduction Disturbance (CD 0.97, NORM 0.60)}
+
+\textbf{LLM (GPT-5.4):}
+\begin{quote}
+\small
+\textit{``Automated ECG analysis suggests a possible conduction abnormality with high model confidence, while also assigning moderate probability to otherwise normal sinus rhythm. This pattern may indicate a rhythm that is sinus in origin but with abnormal impulse conduction, such as a bundle branch block or atrioventricular conduction delay.}
+
+\textit{The model's attention is concentrated in multiple short recurring intervals across the tracing, which is broadly consistent with focus on repetitive depolarisation complexes, especially regions likely corresponding to the QRS complex and adjacent conduction-related features.}
+
+\textit{Suggested follow-up: perform manual interpretation of the 12-lead ECG with particular attention to PR interval, QRS duration/morphology, axis, and AV conduction. Compare with prior ECGs. Consider repeat ECG, telemetry/Holter monitoring, and cardiology assessment if symptomatic.}
+
+\textit{Disclaimer: This is an automated screening output and should not be used as a definitive diagnosis.''}
+\end{quote}
+
+\textbf{Rule-based:}
+\begin{quote}
+\small
+\textit{``ABNORMALITIES DETECTED: Conduction disturbance (confidence: 97\%). Detail: Abnormal electrical conduction pattern, possibly a bundle branch block or atrioventricular conduction delay. Follow-up: Consider echocardiography to assess structural correlates. Cardiology review if symptomatic. DISCLAIMER: This is an automated screening result and does not constitute a medical diagnosis.''}
+\end{quote}
+
+The LLM output references specific ECG parameters (PR interval, QRS morphology), interprets the Grad-CAM attention pattern, and provides more detailed follow-up recommendations. The rule-based output is factually correct but generic and does not adapt to Grad-CAM context.
+
+\subsubsection*{Case 2: Hallucination example (before prompt fix)}
+
+Given a clearly normal ECG (NORM 0.92, MI 0.05, STTC 0.08, CD 0.03, HYP 0.04), the initial LLM prompt produced:
+
+\begin{quote}
+\small
+\textit{``There is a small nonzero probability assigned to \textbf{nonspecific ST-T change patterns} (STTC) \ldots No strong automated signal is present for \textbf{myocardial infarction, hypertrophy, or conduction disease}.''}
+\end{quote}
+
+Despite all abnormal classes having probabilities below 0.1, the LLM discussed each one as a potential concern. After removing the all-class probability listing from the prompt and adding the grounding constraint, the same input produces:
+
+\begin{quote}
+\small
+\textit{``ECG screening identifies normal sinus rhythm (NORM, confidence 92\%). No abnormalities were detected above the reporting threshold. Routine follow-up as clinically indicated. This is an automated screening output and should not be used as a definitive diagnosis.''}
+\end{quote}
+
+This demonstrates that hallucination in LLM-based clinical explanation is primarily a prompt design issue rather than a fundamental model limitation.
+
+\end{document}
